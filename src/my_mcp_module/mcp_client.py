@@ -65,10 +65,27 @@ class MCPClient:
             requests.exceptions.RequestException: If the server request fails.
         """
         try:
-            response = self.session.get(f"{self.server_url}/tools/list")
+            payload = {
+                "method": "tools/list",
+                "jsonrpc": "2.0",
+                "id": 1
+            }
+            response = self.session.post(
+                f"{self.server_url}/message",
+                json=payload,
+                headers={
+                    'Content-Type': 'application/json',
+                    'Accept': '*/*',
+                    'Accept-Language': '*'
+                }
+            )
             response.raise_for_status()
             
-            tools_data = response.json()
+            result = response.json()
+            if 'error' in result:
+                raise requests.exceptions.RequestException(f"RPC Error: {result['error']}")
+                
+            tools_data = result.get('result', [])
             tools = []
             
             for tool_data in tools_data:
@@ -100,12 +117,28 @@ class MCPClient:
             requests.exceptions.RequestException: If the server request fails.
         """
         try:
+            payload = {
+                "method": tool_name,
+                "jsonrpc": "2.0",
+                "id": 1,
+                "params": parameters
+            }
             response = self.session.post(
-                f"{self.server_url}/api/tools/{tool_name}",
-                json=parameters
+                f"{self.server_url}/message",
+                json=payload,
+                headers={
+                    'Content-Type': 'application/json',
+                    'Accept': '*/*',
+                    'Accept-Language': '*'
+                }
             )
             response.raise_for_status()
-            return response.json()
+            
+            result = response.json()
+            if 'error' in result:
+                raise requests.exceptions.RequestException(f"RPC Error: {result['error']}")
+            
+            return result.get('result')
             
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to invoke tool {tool_name}: {e}")

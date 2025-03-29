@@ -3,6 +3,7 @@
 import os
 import json
 import logging
+import uuid
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,11 +25,12 @@ class MCPTool:
 class MCPClient:
     """Client for interacting with the MCP server."""
     
-    def __init__(self, env_file: Optional[str] = None):
+    def __init__(self, env_file: Optional[str] = None, session_id: Optional[str] = None):
         """Initialize the MCP client.
         
         Args:
             env_file: Path to the environment file. If None, looks for .env in the current directory.
+            session_id: Optional session ID. If None, a new UUID will be generated.
         """
         if env_file:
             load_dotenv(env_file)
@@ -50,7 +52,8 @@ class MCPClient:
                 logger.warning("No .env file found. Using default configuration.")
         
         self.server_url = os.getenv('MCP_SERVER_URL', 'http://localhost:3000')
-        logger.info(f"Initialized MCP client with server URL: {self.server_url}")
+        self.session_id = session_id or str(uuid.uuid4())
+        logger.info(f"Initialized MCP client with server URL: {self.server_url} and session ID: {self.session_id}")
         
         # Initialize session for connection reuse
         self.session = requests.Session()
@@ -71,7 +74,7 @@ class MCPClient:
                 "id": 1
             }
             response = self.session.post(
-                f"{self.server_url}/message",
+                f"{self.server_url}/message?sessionId={self.session_id}",
                 json=payload,
                 headers={
                     'Content-Type': 'application/json',
@@ -124,7 +127,7 @@ class MCPClient:
                 "params": parameters
             }
             response = self.session.post(
-                f"{self.server_url}/message",
+                f"{self.server_url}/message?sessionId={self.session_id}",
                 json=payload,
                 headers={
                     'Content-Type': 'application/json',

@@ -65,7 +65,7 @@ class MCPClient:
             requests.exceptions.RequestException: If the server request fails.
         """
         try:
-            response = self.session.get(f"{self.server_url}/api/tools")
+            response = self.session.get(f"{self.server_url}/tools/list")
             response.raise_for_status()
             
             tools_data = response.json()

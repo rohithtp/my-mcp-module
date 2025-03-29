@@ -4,6 +4,7 @@ import os
 import json
 import logging
 import uuid
+import sseclient
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +58,72 @@ class MCPClient:
         
         # Initialize session for connection reuse
         self.session = requests.Session()
+        
+        # Initialize the connection
+        self._initialize_connection()
+        
+    def _initialize_connection(self):
+        """Initialize the connection with the MCP server."""
+        # Send initialize request
+        init_payload = {
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "prompts": {},
+                    "resources": {},
+                    "tools": {}
+                },
+                "clientInfo": {
+                    "name": "python-mcp-client",
+                    "version": "1.0.0"
+                }
+            },
+            "jsonrpc": "2.0",
+            "id": 0
+        }
+        
+        response = self.session.post(
+            f"{self.server_url}/message?sessionId={self.session_id}",
+            json=init_payload,
+            headers={
+                'Content-Type': 'application/json',
+                'Accept': '*/*',
+                'Accept-Language': '*',
+                'Sec-Fetch-Mode': 'cors',
+                'User-Agent': 'node',
+                'Accept-Encoding': 'gzip, deflate'
+            }
+        )
+        
+        if response.status_code == 202:
+            logger.info("Initialization request accepted")
+            
+            # Send initialized notification
+            notify_payload = {
+                "method": "notifications/initialized",
+                "jsonrpc": "2.0"
+            }
+            
+            response = self.session.post(
+                f"{self.server_url}/message?sessionId={self.session_id}",
+                json=notify_payload,
+                headers={
+                    'Content-Type': 'application/json',
+                    'Accept': '*/*',
+                    'Accept-Language': '*',
+                    'Sec-Fetch-Mode': 'cors',
+                    'User-Agent': 'node',
+                    'Accept-Encoding': 'gzip, deflate'
+                }
+            )
+            
+            if response.status_code == 202:
+                logger.info("Initialized notification sent")
+            else:
+                raise requests.exceptions.RequestException(f"Failed to send initialized notification: {response.status_code}")
+        else:
+            raise requests.exceptions.RequestException(f"Failed to initialize connection: {response.status_code}")
     
     def get_tools(self) -> List[MCPTool]:
         """Retrieve available tools from the MCP server.
@@ -95,8 +162,33 @@ class MCPClient:
                 logger.info(f"Response content: {response.content.decode()}")
             
             if response.status_code == 202:
-                logger.info("Request accepted, waiting for response...")
-                # TODO: Implement polling or WebSocket connection for actual response
+                logger.info("Request accepted, connecting to SSE stream...")
+                # Connect to SSE stream
+                sse_response = self.session.get(
+                    f"{self.server_url}/events?sessionId={self.session_id}",
+                    stream=True,
+                    headers={
+                        'Accept': 'text/event-stream',
+                        'Cache-Control': 'no-cache',
+                        'Connection': 'keep-alive'
+                    }
+                )
+                
+                client = sseclient.SSEClient(sse_response)
+                for event in client.events():
+                    if event.data:
+                        data = json.loads(event.data)
+                        if isinstance(data, dict) and 'tools' in data:
+                            tools = []
+                            for tool_data in data['tools']:
+                                tool = MCPTool(
+                                    name=tool_data['name'],
+                                    description=tool_data.get('description', ''),
+                                    parameters=tool_data.get('parameters', {}),
+                                    required_params=tool_data.get('required', [])
+                                )
+                                tools.append(tool)
+                            return tools
                 return []
             
             response.raise_for_status()
@@ -121,8 +213,6 @@ class MCPClient:
             
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to retrieve tools from MCP server: {e}")
-            if isinstance(e, requests.exceptions.Timeout):
-                logger.error("Request timed out after 30 seconds")
             raise
     
     def invoke_tool(self, tool_name: str, parameters: Dict[str, Any]) -> Any:

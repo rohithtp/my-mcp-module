@@ -82,9 +82,10 @@ class MCPClient:
                     'Content-Type': 'application/json',
                     'Accept': '*/*',
                     'Accept-Language': '*',
-                    'User-Agent': 'node'  # Matching the User-Agent from your example
-                },
-                timeout=30  # Increase timeout to 30 seconds
+                    'Sec-Fetch-Mode': 'cors',
+                    'User-Agent': 'node',
+                    'Accept-Encoding': 'gzip, deflate'
+                }
             )
             
             logger.info(f"Response status: {response.status_code}")
@@ -92,6 +93,11 @@ class MCPClient:
             
             if response.content:
                 logger.info(f"Response content: {response.content.decode()}")
+            
+            if response.status_code == 202:
+                logger.info("Request accepted, waiting for response...")
+                # TODO: Implement polling or WebSocket connection for actual response
+                return []
             
             response.raise_for_status()
             
@@ -148,9 +154,10 @@ class MCPClient:
                     'Content-Type': 'application/json',
                     'Accept': '*/*',
                     'Accept-Language': '*',
-                    'User-Agent': 'node'  # Matching the User-Agent from your example
-                },
-                timeout=30  # Increase timeout to 30 seconds
+                    'Sec-Fetch-Mode': 'cors',
+                    'User-Agent': 'node',
+                    'Accept-Encoding': 'gzip, deflate'
+                }
             )
             
             logger.info(f"Response status: {response.status_code}")
@@ -158,6 +165,11 @@ class MCPClient:
             
             if response.content:
                 logger.info(f"Response content: {response.content.decode()}")
+            
+            if response.status_code == 202:
+                logger.info("Request accepted, waiting for response...")
+                # TODO: Implement polling or WebSocket connection for actual response
+                return None
             
             response.raise_for_status()
             

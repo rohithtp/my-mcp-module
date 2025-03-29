@@ -5,6 +5,9 @@ import json
 import logging
 import uuid
 import time
+import threading
+import queue
+import sseclient
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,33 +62,71 @@ class MCPClient:
         # Initialize session for connection reuse
         self.session = requests.Session()
         
+        # Initialize response queue for SSE events
+        self.response_queue = queue.Queue()
+        self.session_id_event = threading.Event()
+        
         # Initialize the connection
         self._initialize_connection()
     
-    def _initialize_connection(self):
-        """Initialize the connection with the MCP server."""
-        # Send initialize request
-        init_payload = {
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {
-                    "prompts": {},
-                    "resources": {},
-                    "tools": {}
-                },
-                "clientInfo": {
-                    "name": "python-mcp-client",
-                    "version": "1.0.0"
-                }
-            },
-            "jsonrpc": "2.0",
-            "id": 0
+    def _start_sse_listener(self):
+        """Start listening for SSE events."""
+        headers = {
+            'Accept': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive'
         }
+        
+        response = self.session.get(
+            f"{self.server_url}/sse?sessionId={self.session_id}",
+            headers=headers,
+            stream=True
+        )
+        
+        if response.status_code != 200:
+            raise requests.exceptions.RequestException(f"Failed to establish SSE connection: {response.status_code}")
+        
+        client = sseclient.SSEClient(response)
+        
+        def _listen():
+            for event in client.events():
+                logger.debug(f"Received SSE event: {event.event} - {event.data}")
+                if event.event == 'endpoint':
+                    # Extract session ID from the endpoint URL
+                    endpoint_url = event.data.strip()
+                    new_session_id = endpoint_url.split('sessionId=')[1]
+                    self.session_id = new_session_id
+                    logger.info(f"Updated session ID to: {self.session_id}")
+                    self.session_id_event.set()
+                elif event.event == 'response':
+                    try:
+                        data = json.loads(event.data)
+                        self.response_queue.put(data)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse response data: {event.data}")
+        
+        self.sse_thread = threading.Thread(target=_listen, daemon=True)
+        self.sse_thread.start()
+        
+        # Wait for the session ID to be updated
+        if not self.session_id_event.wait(timeout=5):
+            raise requests.exceptions.RequestException("Timed out waiting for session ID from SSE")
+    
+    def _send_request(self, method: str, params: Optional[Dict[str, Any]] = None, request_id: Optional[int] = None) -> Dict[str, Any]:
+        """Send a request to the server and wait for response."""
+        payload = {
+            "jsonrpc": "2.0",
+            "method": method,
+            "id": request_id if request_id is not None else 0
+        }
+        if params is not None:
+            payload["params"] = params
+        
+        logger.info(f"Sending request: {json.dumps(payload)}")
         
         response = self.session.post(
             f"{self.server_url}/message?sessionId={self.session_id}",
-            json=init_payload,
+            json=payload,
             headers={
                 'Content-Type': 'application/json',
                 'Accept': '*/*',
@@ -97,35 +138,74 @@ class MCPClient:
         )
         
         if response.status_code == 202:
-            logger.info("Initialization request accepted")
-            time.sleep(1)  # Give server time to process
-            
-            # Send initialized notification
-            notify_payload = {
-                "method": "notifications/initialized",
-                "jsonrpc": "2.0"
-            }
-            
-            response = self.session.post(
-                f"{self.server_url}/message?sessionId={self.session_id}",
-                json=notify_payload,
-                headers={
-                    'Content-Type': 'application/json',
-                    'Accept': '*/*',
-                    'Accept-Language': '*',
-                    'Sec-Fetch-Mode': 'cors',
-                    'User-Agent': 'node',
-                    'Accept-Encoding': 'gzip, deflate'
-                }
-            )
-            
-            if response.status_code == 202:
-                logger.info("Initialized notification sent")
-                time.sleep(1)  # Give server time to process
-            else:
-                raise requests.exceptions.RequestException(f"Failed to send initialized notification: {response.status_code}")
+            logger.info("Request accepted, waiting for response...")
+            try:
+                result = self.response_queue.get(timeout=5)
+                logger.info(f"Response received: {result}")
+                if 'error' in result:
+                    raise requests.exceptions.RequestException(f"RPC Error: {result['error']}")
+                return result.get('result', {})
+            except queue.Empty:
+                raise requests.exceptions.RequestException("Timed out waiting for response")
         else:
-            raise requests.exceptions.RequestException(f"Failed to initialize connection: {response.status_code}")
+            raise requests.exceptions.RequestException(f"Request failed: {response.status_code}")
+    
+    def _send_notification(self, method: str, params: Optional[Dict[str, Any]] = None):
+        """Send a notification to the server."""
+        payload = {
+            "jsonrpc": "2.0",
+            "method": method
+        }
+        if params is not None:
+            payload["params"] = params
+        
+        logger.info(f"Sending notification: {json.dumps(payload)}")
+        
+        response = self.session.post(
+            f"{self.server_url}/message?sessionId={self.session_id}",
+            json=payload,
+            headers={
+                'Content-Type': 'application/json',
+                'Accept': '*/*',
+                'Accept-Language': '*',
+                'Sec-Fetch-Mode': 'cors',
+                'User-Agent': 'node',
+                'Accept-Encoding': 'gzip, deflate'
+            }
+        )
+        
+        if response.status_code != 202:
+            raise requests.exceptions.RequestException(f"Failed to send notification: {response.status_code}")
+    
+    def _initialize_connection(self):
+        """Initialize the connection with the MCP server."""
+        # Start SSE listener first and wait for session ID
+        self._start_sse_listener()
+        
+        # Step 1: Send initialize request
+        init_result = self._send_request(
+            "$/initialize",
+            {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "prompts": {},
+                    "resources": {},
+                    "tools": {}
+                },
+                "clientInfo": {
+                    "name": "python-mcp-client",
+                    "version": "1.0.0"
+                }
+            },
+            request_id=0
+        )
+        
+        logger.info(f"Server capabilities: {init_result}")
+        
+        # Step 2: Send initialized notification
+        self._send_notification("$/initialized")
+        
+        logger.info("Connection initialized successfully")
     
     def get_tools(self) -> List[MCPTool]:
         """Retrieve available tools from the MCP server.
@@ -137,57 +217,10 @@ class MCPClient:
             requests.exceptions.RequestException: If the server request fails.
         """
         try:
-            payload = {
-                "method": "tools/list",
-                "jsonrpc": "2.0",
-                "id": 1
-            }
-            logger.info(f"Sending request to {self.server_url}/message with payload: {json.dumps(payload)}")
-            
-            response = self.session.post(
-                f"{self.server_url}/message?sessionId={self.session_id}",
-                json=payload,
-                headers={
-                    'Content-Type': 'application/json',
-                    'Accept': '*/*',
-                    'Accept-Language': '*',
-                    'Sec-Fetch-Mode': 'cors',
-                    'User-Agent': 'node',
-                    'Accept-Encoding': 'gzip, deflate'
-                }
-            )
-            
-            logger.info(f"Response status: {response.status_code}")
-            logger.info(f"Response headers: {dict(response.headers)}")
-            
-            if response.content:
-                logger.info(f"Response content: {response.content.decode()}")
-            
-            if response.status_code == 202:
-                logger.info("Request accepted, waiting for response...")
-                time.sleep(1)  # Give server time to process
-                
-                # For now, return a hardcoded response based on the server output
-                tools = [
-                    MCPTool(
-                        name="echo",
-                        description="Echo a message",
-                        parameters={},
-                        required_params=[]
-                    )
-                ]
-                return tools
-            
-            response.raise_for_status()
-            
-            result = response.json()
-            if 'error' in result:
-                raise requests.exceptions.RequestException(f"RPC Error: {result['error']}")
-                
-            tools_data = result.get('result', [])
+            result = self._send_request("$/tools/list", request_id=1)
             tools = []
             
-            for tool_data in tools_data:
+            for tool_data in result:
                 tool = MCPTool(
                     name=tool_data['name'],
                     description=tool_data.get('description', ''),
@@ -198,13 +231,19 @@ class MCPClient:
             
             return tools
             
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to retrieve tools from MCP server: {e}")
+        except Exception as e:
+            logger.error(f"Error getting tools: {str(e)}")
             raise
     
     def close(self):
-        """Close the client session."""
-        self.session.close()
+        """Close the connection with the MCP server."""
+        try:
+            self._send_notification("$/shutdown")
+            logger.info("Successfully closed connection")
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Error while closing connection: {str(e)}")
+        finally:
+            self.session.close()
     
     def __enter__(self):
         """Context manager entry."""

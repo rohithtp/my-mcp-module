@@ -73,15 +73,26 @@ class MCPClient:
                 "jsonrpc": "2.0",
                 "id": 1
             }
+            logger.info(f"Sending request to {self.server_url}/message with payload: {json.dumps(payload)}")
+            
             response = self.session.post(
                 f"{self.server_url}/message?sessionId={self.session_id}",
                 json=payload,
                 headers={
                     'Content-Type': 'application/json',
                     'Accept': '*/*',
-                    'Accept-Language': '*'
-                }
+                    'Accept-Language': '*',
+                    'User-Agent': 'node'  # Matching the User-Agent from your example
+                },
+                timeout=30  # Increase timeout to 30 seconds
             )
+            
+            logger.info(f"Response status: {response.status_code}")
+            logger.info(f"Response headers: {dict(response.headers)}")
+            
+            if response.content:
+                logger.info(f"Response content: {response.content.decode()}")
+            
             response.raise_for_status()
             
             result = response.json()
@@ -104,6 +115,8 @@ class MCPClient:
             
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to retrieve tools from MCP server: {e}")
+            if isinstance(e, requests.exceptions.Timeout):
+                logger.error("Request timed out after 30 seconds")
             raise
     
     def invoke_tool(self, tool_name: str, parameters: Dict[str, Any]) -> Any:
@@ -126,15 +139,26 @@ class MCPClient:
                 "id": 1,
                 "params": parameters
             }
+            logger.info(f"Sending request to {self.server_url}/message with payload: {json.dumps(payload)}")
+            
             response = self.session.post(
                 f"{self.server_url}/message?sessionId={self.session_id}",
                 json=payload,
                 headers={
                     'Content-Type': 'application/json',
                     'Accept': '*/*',
-                    'Accept-Language': '*'
-                }
+                    'Accept-Language': '*',
+                    'User-Agent': 'node'  # Matching the User-Agent from your example
+                },
+                timeout=30  # Increase timeout to 30 seconds
             )
+            
+            logger.info(f"Response status: {response.status_code}")
+            logger.info(f"Response headers: {dict(response.headers)}")
+            
+            if response.content:
+                logger.info(f"Response content: {response.content.decode()}")
+            
             response.raise_for_status()
             
             result = response.json()
@@ -145,6 +169,8 @@ class MCPClient:
             
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to invoke tool {tool_name}: {e}")
+            if isinstance(e, requests.exceptions.Timeout):
+                logger.error("Request timed out after 30 seconds")
             raise
     
     def close(self):

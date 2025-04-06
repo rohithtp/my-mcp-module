@@ -169,4 +169,6 @@ All errors are logged using Python's standard logging module.
 
 ## License
 
-[Add your license information here] 
+This project is licensed under the [Unlicense](https://unlicense.org). This means the software is released into the public domain and can be freely used, modified, and distributed for any purpose.
+
+For more details, see the [LICENSE](./LICENSE) file.
